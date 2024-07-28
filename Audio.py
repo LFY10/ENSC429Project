@@ -28,7 +28,21 @@ def wiener_filtering(magnitude_spectrogram, phase_spectrogram, noise_spectrum_sm
     stft_denoised = magnitude_spectrogram_denoised * np.exp(1j * phase_spectrogram)
     return stft_denoised
 
-
+# Function for LMS Filtering
+def lms_filtering(y, noise_spectrum_smoothed, mu=0.01, filter_order=4):
+    n = len(y)
+    w = np.zeros(filter_order)
+    y_denoised = np.zeros(n)
+    
+    for i in range(filter_order, n):
+        x = y[i-filter_order:i][::-1]
+        d = y[i]
+        noise_estimate = np.mean(noise_spectrum_smoothed)
+        e = d - noise_estimate
+        w += mu * e * x
+        y_denoised[i] = d - np.dot(w, x)
+    
+    return y_denoised
 
 # Function to estimate noise from low energy segments
 def estimate_noise_low_energy(y, sr, hop_length, n_fft):
@@ -51,6 +65,17 @@ def estimate_noise_manual(y, sr, hop_length, n_fft, start_time, end_time):
     noise_spectrum = np.mean(np.abs(stft_noise), axis=1)
     noise_spectrum_smoothed = medfilt(noise_spectrum, kernel_size=5)
     return noise_spectrum_smoothed
+
+# Function to calculate SNR
+def calculate_snr(original, denoised):
+    # Ensure the same length for both signals
+    min_len = min(len(original), len(denoised))
+    original = original[:min_len]
+    denoised = denoised[:min_len]
+    signal_power = np.mean(original ** 2)
+    noise_power = np.mean((original - denoised) ** 2)
+    snr = 10 * np.log10(signal_power / noise_power)
+    return snr
 
 # Main function to apply the chosen noise reduction method
 def apply_noise_reduction(noise_estimation='', method=''):
@@ -75,7 +100,7 @@ def apply_noise_reduction(noise_estimation='', method=''):
 
     # Estimate noise spectrum
     if noise_estimation == 'manual':
-        start_time = 2.3  #Noise duration from the plot
+        start_time = 2.3  # Noise duration from the plot
         end_time = 2.9
         noise_spectrum_smoothed = estimate_noise_manual(y, sr, hop_length, n_fft, start_time, end_time)
     elif noise_estimation == 'low_energy':
@@ -97,18 +122,22 @@ def apply_noise_reduction(noise_estimation='', method=''):
     # Apply the selected noise reduction method and plot results
     if method == 'spectral_subtraction':
         stft_denoised = spectral_subtraction(magnitude_spectrogram, phase_spectrogram, noise_spectrum_smoothed)
+        y_denoised = librosa.istft(stft_denoised, hop_length=hop_length)
     elif method == 'wiener':
         stft_denoised = wiener_filtering(magnitude_spectrogram, phase_spectrogram, noise_spectrum_smoothed)
+        y_denoised = librosa.istft(stft_denoised, hop_length=hop_length)
+    elif method == 'lms':
+        # For LMS, we use the time domain signal with the estimated noise spectrum
+        y_denoised = lms_filtering(y, noise_spectrum_smoothed, mu=0.01, filter_order=3)
     else:
-        raise ValueError("Invalid method. Choose 'spectral_subtraction' or 'wiener'.")
-
-    y_denoised = librosa.istft(stft_denoised, hop_length=hop_length)
+        raise ValueError("Invalid method. Choose 'spectral_subtraction', 'wiener', or 'lms'.")
 
     # Output Processing: Save the cleaned audio to a file (optional)
     sf.write(f'h_1_denoised_{noise_estimation}_{method}.wav', y_denoised, sr)
 
     # Plot the denoised spectrogram
-    plot_spectrogram(np.abs(stft_denoised), f'Denoised Spectrogram ({noise_estimation.upper()}, {method.capitalize()})', sr, hop_length)
+    if method != 'lms':  # LMS is not in the frequency domain, so we skip this plot
+        plot_spectrogram(np.abs(stft_denoised), f'Denoised Spectrogram ({noise_estimation.upper()}, {method.capitalize()})', sr, hop_length)
 
     # Plot the original and denoised waveforms for comparison and save the plot
     fig, ax = plt.subplots()
@@ -125,6 +154,10 @@ def apply_noise_reduction(noise_estimation='', method=''):
     print("Original audio shape: ", y.shape)
     y_denoised, _ = sf.read(f'h_1_denoised_{noise_estimation}_{method}.wav')
     print(f"Denoised audio shape ({noise_estimation.upper()}, {method.capitalize()}): ", y_denoised.shape)
+    
+    # Calculate and print SNR
+    snr = calculate_snr(y, y_denoised)
+    print(f"Signal-to-Noise Ratio (SNR): {snr:.2f} dB")
 
-# Change noise_estimation: 'manual/low_energy' or denoised_method:'wiener/spectral_subtraction'
+# Change noise_estimation: 'manual/low_energy' or denoised_method:'wiener/spectral_subtraction/lms'
 apply_noise_reduction(noise_estimation='manual', method='wiener')  
